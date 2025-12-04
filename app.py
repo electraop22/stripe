@@ -44,11 +44,13 @@ class AdvancedCardChecker:
         self.proxy_pool = []
         self.load_proxies()
         self.request_timeout = aiohttp.ClientTimeout(total=70)
-        self.global_semaphore = asyncio.Semaphore(20)  # Global concurrency limit for all users
+        self.user_semaphores = {}  # Per-user semaphore dictionary
+        self.max_concurrent_per_user = 20  # Max concurrent requests per user
         # Updated Stripe key from test-subject.py
         self.stripe_key = "pk_live_51IcTUHEZ8uTrpn7wTEclyYcnuG2kTGBaDYArq5tp4r4ogLSw6iE9OJ661ELpRKcP20kEjGyAPZtbIqwg3kSGKYTW00MHGU0Jsk"
         self.bin_cache = {}
         self.base_url = "https://fancyimpress.com"  # Updated URL from test-subject.py
+        self.user_files = {}  # Store user's uploaded files
 
     def create_banner(self):
         """Create a dynamic banner with system information."""
@@ -75,6 +77,17 @@ class AdvancedCardChecker:
         if os.path.exists('proxies.txt'):
             with open('proxies.txt', 'r') as f:
                 self.proxy_pool = [line.strip() for line in f if line.strip()]
+
+    def get_user_semaphore(self, user_id):
+        """Get or create a semaphore for a specific user"""
+        if user_id not in self.user_semaphores:
+            self.user_semaphores[user_id] = asyncio.Semaphore(self.max_concurrent_per_user)
+        return self.user_semaphores[user_id]
+
+    def cleanup_user_semaphore(self, user_id):
+        """Clean up semaphore when user is done"""
+        if user_id in self.user_semaphores:
+            del self.user_semaphores[user_id]
 
     async def is_user_allowed(self, user_id):
         """Check if user has active subscription"""
@@ -126,8 +139,9 @@ class AdvancedCardChecker:
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
             "🔥 𝐖𝐞𝐥𝐜𝐨𝐦𝐞 𝐓𝐨 𝐅𝐍 𝐌𝐀𝐒𝐒 𝐂𝐇𝐄𝐂𝐊𝐄𝐑 𝐁𝐎𝐓!\n\n"
-            "🔥 𝐔𝐬𝐞 /chk 𝐓𝐨 𝐂𝐡𝐞𝐜𝐤 𝐒𝐢𝐧𝐠𝐥𝐞 𝐂𝐂\n\n"
-            "📁 𝐒𝐞𝐧𝐝 𝐂𝐨𝐦𝐛𝐨 𝐅𝐢𝐥𝐞 𝐎𝐫 𝐄𝐥𝐬𝐞 𝐔𝐬𝐞 𝐁𝐮𝐭𝐭𝐨𝐧 𝐁𝐞𝐥𝐨𝐰:",
+            "🔥 𝐔𝐬𝐞 /chk 𝐓𝐨 𝐂𝐡𝐞𝐜𝐤 𝐒𝐢𝐧𝐠𝐥𝐞 𝐂𝐂 (or reply to any message containing CC)\n\n"
+            "📁 𝐒𝐞𝐧𝐝 𝐂𝐨𝐦𝐛𝐨 𝐅𝐢𝐥𝐞 𝐀𝐧𝐝 𝐑𝐞𝐩𝐥𝐲 𝐖𝐢𝐭𝐡 /fchk 𝐓𝐨 𝐂𝐡𝐞𝐜𝐤\n\n"
+            "𝐔𝐬𝐞 𝐁𝐮𝐭𝐭𝐨𝐧𝐬 𝐁𝐞𝐥𝐨𝐰:",
             reply_markup=reply_markup
         )
 
@@ -290,14 +304,21 @@ class AdvancedCardChecker:
         help_text = (
             "📜 <b>Bot Commands:</b>\n\n"
             "/start - Start the bot and show the main menu\n"
-            "/chk <card> - Check a single card (e.g., /chk 4111111111111111|12|2025|123)\n"
+            "/chk <card> - Check a single card (or reply to any message containing CC)\n"
+            "/fchk - Check cards from a file (reply to uploaded file with this command)\n"
             "/stop - Stop the current checking process\n"
             "/stats - Show your checking statistics\n"
             "/help - Show this help message\n\n"
             "📁 <b>How to Use:</b>\n"
-            "1. Upload a combo file (.txt) or use /chk to check a single card.\n"
-            "2. View live stats and progress during the check.\n"
-            "3. Use /stop to cancel the process anytime."
+            "1. Upload a combo file (.txt) and reply with /fchk to check all cards\n"
+            "2. Use /chk to check single card or reply to any message with /chk\n"
+            "3. View live stats and progress during the check.\n"
+            "4. Use /stop to cancel the process anytime.\n\n"
+            "🎯 <b>Card Formats Supported:</b>\n"
+            "• 4111111111111111|12|2025|123\n"
+            "• 4111111111111111|12|25|123\n"
+            "• 4111111111111111|12|2025|123|John Doe\n"
+            "• Any message containing card format"
         )
         await self.send_message(update, help_text)
 
@@ -308,38 +329,125 @@ class AdvancedCardChecker:
                 'approved': 0,
                 'declined': 0,
                 'checked': 0,
+                'approved_ccs': [],
                 'start_time': datetime.now()
             }
 
+    def extract_card_from_text(self, text):
+        """Extract card details from any text message"""
+        patterns = [
+            # Standard format: 4111111111111111|12|2025|123
+            r'(\d{13,19})[|\s/-]+(\d{1,2})[|\s/-]+(\d{2,4})[|\s/-]+(\d{3,4})',
+            # Format with name: 4111111111111111|12|2025|123|John Doe
+            r'(\d{13,19})[|\s/-]+(\d{1,2})[|\s/-]+(\d{2,4})[|\s/-]+(\d{3,4})[|\s/-]+(.+)',
+            # Format with spaces: 4111 1111 1111 1111|12|2025|123
+            r'(\d{4}\s?\d{4}\s?\d{4}\s?\d{3,4})[|\s/-]+(\d{1,2})[|\s/-]+(\d{2,4})[|\s/-]+(\d{3,4})',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                groups = match.groups()
+                if len(groups) >= 4:
+                    card = groups[0].replace(" ", "")  # Remove spaces from card number
+                    month = groups[1]
+                    year = groups[2]
+                    cvv = groups[3]
+                    
+                    # Handle 2-digit year
+                    if len(year) == 2:
+                        year = f"20{year}" if int(year) < 50 else f"19{year}"
+                    
+                    return f"{card}|{month}|{year}|{cvv}"
+        
+        return None
+
     async def handle_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Save file and wait for /fchk command"""
         user_id = update.effective_user.id
         if not await self.is_user_allowed(user_id):
             await update.message.reply_text("⛔ Authorization required!")
+            return
+
+        try:
+            file = await update.message.document.get_file()
+            filename = f"combos_{user_id}_{datetime.now().timestamp()}.txt"
+            await file.download_to_drive(filename)
+            
+            # Store file reference for this user
+            self.user_files[user_id] = filename
+            
+            await update.message.reply_text(
+                "✅ 𝐅𝐢𝐥𝐞 𝐑𝐞𝐜𝐞𝐢𝐯𝐞𝐝!\n\n"
+                "📌 𝐍𝐨𝐰 𝐑𝐞𝐩𝐥𝐲 𝐓𝐨 𝐓𝐡𝐢𝐬 𝐌𝐞𝐬𝐬𝐚𝐠𝐞 𝐖𝐢𝐭𝐡 /fchk 𝐓𝐨 𝐒𝐭𝐚𝐫𝐭 𝐂𝐡𝐞𝐜𝐤𝐢𝐧𝐠\n\n"
+                "⚡ 𝐁𝐨𝐭 𝐖𝐢𝐥𝐥 𝐎𝐧𝐥𝐲 𝐒𝐭𝐚𝐫𝐭 𝐖𝐡𝐞𝐧 𝐘𝐨𝐮 𝐔𝐬𝐞 /fchk 𝐂𝐨𝐦𝐦𝐚𝐧𝐝"
+            )
+        except Exception as e:
+            logger.error(f"File error: {str(e)}")
+            await update.message.reply_text("❌ File processing failed!")
+
+    async def fchk_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Check cards from a file (must reply to file message)"""
+        user_id = update.effective_user.id
+        
+        if not await self.is_user_allowed(user_id):
+            await update.message.reply_text("⛔ Authorization required!")
+            return
+
+        # Check if message is a reply
+        if not update.message.reply_to_message:
+            await update.message.reply_text(
+                "❌ 𝐏𝐥𝐞𝐚𝐬𝐞 𝐑𝐞𝐩𝐥𝐲 𝐓𝐨 𝐀 𝐅𝐢𝐥𝐞 𝐌𝐞𝐬𝐬𝐚𝐠𝐞 𝐖𝐢𝐭𝐡 /fchk\n\n"
+                "📁 𝐇𝐨𝐰 𝐓𝐨 𝐔𝐬𝐞:\n"
+                "1. Upload your combo file\n"
+                "2. Reply to that file message with /fchk"
+            )
+            return
+
+        replied_message = update.message.reply_to_message
+        
+        # Check if user has a file stored or if replied message contains a file
+        filename = None
+        if user_id in self.user_files:
+            filename = self.user_files[user_id]
+            # Verify file exists
+            if not os.path.exists(filename):
+                del self.user_files[user_id]
+                filename = None
+        
+        # If no stored file, check if replied message has a document
+        if not filename and replied_message.document:
+            try:
+                file = await replied_message.document.get_file()
+                filename = f"combos_{user_id}_{datetime.now().timestamp()}.txt"
+                await file.download_to_drive(filename)
+            except Exception as e:
+                logger.error(f"File download error: {str(e)}")
+                await update.message.reply_text("❌ Failed to download file!")
+                return
+        
+        if not filename:
+            await update.message.reply_text("❌ No file found! Please upload a file first.")
             return
 
         if user_id in self.active_tasks:
             await update.message.reply_text("⚠️ Existing process found! Use /stop to cancel")
             return
 
-        file = await update.message.document.get_file()
-        filename = f"combos_{user_id}_{datetime.now().timestamp()}.txt"
+        await self.initialize_user_stats(user_id)
+        user_semaphore = self.get_user_semaphore(user_id)
         
-        try:
-            await file.download_to_drive(filename)
-            await self.initialize_user_stats(user_id)
-            self.active_tasks[user_id] = asyncio.create_task(
-                self.process_combos(user_id, filename, update)
-            )
-            await update.message.reply_text(
-                "✅ 𝐅𝐢𝐥𝐞 𝐑𝐞𝐜𝐞𝐢𝐯𝐞𝐝! 𝐒𝐭𝐚𝐫𝐭𝐢𝐧𝐠 𝐂𝐡𝐞𝐜𝐤𝐢𝐧𝐠...\n"
-                "⚡ 𝐒𝐩𝐞𝐞𝐝: 𝐏𝐫𝐨𝐠𝐫𝐞𝐬𝐬 𝐖𝐢𝐥𝐥 𝐁𝐞 𝐔𝐩𝐝𝐚𝐭𝐞𝐝 𝐖𝐡𝐞𝐧 𝐁𝐨𝐭 𝐂𝐡𝐞𝐜𝐤𝐞𝐝 50 𝐂𝐚𝐫𝐝𝐬/sec\n"
-                "📈 𝐔𝐬𝐞 /progress 𝐅𝐨𝐫 𝐋𝐢𝐯𝐞 𝐔𝐩𝐝𝐚𝐭𝐞𝐬"
-            )
-        except Exception as e:
-            logger.error(f"File error: {str(e)}")
-            await update.message.reply_text("❌ File processing failed!")
+        self.active_tasks[user_id] = asyncio.create_task(
+            self.process_combos(user_id, filename, update, user_semaphore)
+        )
+        await update.message.reply_text(
+            "✅ 𝐅𝐢𝐥𝐞 𝐑𝐞𝐜𝐨𝐠𝐧𝐢𝐳𝐞𝐝! 𝐒𝐭𝐚𝐫𝐭𝐢𝐧𝐠 𝐂𝐡𝐞𝐜𝐤𝐢𝐧𝐠...\n"
+            "⚡ 𝐒𝐩𝐞𝐞𝐝: 𝐏𝐫𝐨𝐠𝐫𝐞𝐬𝐬 𝐖𝐢𝐥𝐥 𝐁𝐞 𝐔𝐩𝐝𝐚𝐭𝐞𝐝 𝐖𝐡𝐞𝐧 𝐁𝐨𝐭 𝐂𝐡𝐞𝐜𝐤𝐞𝐝 50 𝐂𝐚𝐫𝐝𝐬/sec\n"
+            "📈 𝐔𝐬𝐞 /stats 𝐅𝐨𝐫 𝐋𝐢𝐯𝐞 𝐔𝐩𝐝𝐚𝐭𝐞𝐬"
+        )
 
     async def chk_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Check single card or extract from replied message"""
         user_id = update.effective_user.id
         if not await self.is_user_allowed(user_id):
             await update.message.reply_text("⛔ Authorization required!")
@@ -347,18 +455,71 @@ class AdvancedCardChecker:
 
         await self.initialize_user_stats(user_id)
 
-        if not context.args:
-            await update.message.reply_text("❌ Format: /chk 4111111111111111|12|2025|123")
+        combo = None
+        extracted_from_reply = False
+        
+        # Case 1: Check if user provided card as argument
+        if context.args:
+            combo = context.args[0]
+        
+        # Case 2: Check if message is a reply to another message
+        elif update.message.reply_to_message:
+            replied_message = update.message.reply_to_message
+            # Try to extract card from replied message text
+            if replied_message.text:
+                combo = self.extract_card_from_text(replied_message.text)
+                if combo:
+                    extracted_from_reply = True
+                else:
+                    # Also check caption if it's a caption
+                    if replied_message.caption:
+                        combo = self.extract_card_from_text(replied_message.caption)
+                        if combo:
+                            extracted_from_reply = True
+            
+            if not combo:
+                await update.message.reply_text(
+                    "❌ 𝐍𝐨 𝐂𝐚𝐫𝐝 𝐅𝐨𝐮𝐧𝐝 𝐈𝐧 𝐑𝐞𝐩𝐥𝐢𝐞𝐝 𝐌𝐞𝐬𝐬𝐚𝐠𝐞!\n\n"
+                    "📌 𝐏𝐥𝐞𝐚𝐬𝐞 𝐒𝐞𝐧𝐝 𝐂𝐚𝐫𝐝 𝐈𝐧 𝐓𝐡𝐢𝐬 𝐅𝐨𝐫𝐦𝐚𝐭:\n"
+                    "• 4111111111111111|12|2025|123\n"
+                    "• 4111111111111111|12|25|123\n"
+                    "• 4111111111111111|12|2025|123|John Doe"
+                )
+                return
+        
+        # Case 3: No arguments and not a reply
+        else:
+            await update.message.reply_text(
+                "❌ 𝐏𝐥𝐞𝐚𝐬𝐞 𝐏𝐫𝐨𝐯𝐢𝐝𝐞 𝐀 𝐂𝐚𝐫𝐝 𝐎𝐫 𝐑𝐞𝐩𝐥𝐲 𝐓𝐨 𝐀 𝐌𝐞𝐬𝐬𝐚𝐠𝐞!\n\n"
+                "📌 𝐅𝐨𝐫𝐦𝐚𝐭𝐬:\n"
+                "1. /chk 4111111111111111|12|2025|123\n"
+                "2. Reply to any message containing card with /chk\n\n"
+                "✅ 𝐄𝐱𝐚𝐦𝐩𝐥𝐞𝐬 𝐈 𝐂𝐚𝐧 𝐄𝐱𝐭𝐫𝐚𝐜𝐭:\n"
+                "• 𝗖𝗖 : 5487426756956890|07|2030|092\n"
+                "• Status: Approved ✅ Card: 4111111111111111|12|25|123\n"
+                "• Any message with card pattern"
+            )
             return
 
-        combo = context.args[0]
-        if len(combo.split("|")) != 4:
-            await update.message.reply_text("❌ Invalid format! Use: 4111111111111111|MM|YYYY|CVV")
+        # Validate card format
+        if not combo or len(combo.split("|")) < 4:
+            await update.message.reply_text(
+                "❌ Invalid card format!\n\n"
+                "✅ 𝐂𝐨𝐫𝐫𝐞𝐜𝐭 𝐅𝐨𝐫𝐦𝐚𝐭𝐬:\n"
+                "• 4111111111111111|12|2025|123\n"
+                "• 4111111111111111|12|25|123\n"
+                "• 4111111111111111|12|2025|123|John Doe"
+            )
             return
 
-        await update.message.reply_text("🔍 Checking card...")
+        if extracted_from_reply:
+            await update.message.reply_text(f"🔍 𝐄𝐱𝐭𝐫𝐚𝐜𝐭𝐞𝐝 𝐂𝐚𝐫𝐝: `{combo}`\n\nChecking card...", parse_mode='HTML')
+        else:
+            await update.message.reply_text("🔍 Checking card...")
+
         try:
-            result, status, error_message = await self.process_line(user_id, combo, self.global_semaphore, update, is_single_check=True)
+            user_semaphore = self.get_user_semaphore(user_id)
+            result, status, error_message = await self.process_line(user_id, combo, user_semaphore, update, is_single_check=True)
             if result:
                 bin_info = await self.fetch_bin_info(combo[:6])
                 check_time = random.uniform(3.0, 10.0)
@@ -374,14 +535,31 @@ class AdvancedCardChecker:
         except Exception as e:
             await update.message.reply_text(f"⚠️ Check failed: {str(e)}")
 
-    async def process_combos(self, user_id, filename, update):
+    async def process_combos(self, user_id, filename, update, user_semaphore):
         try:
             with open(filename, 'r') as f:
-                combos = [line.strip() for line in f if line.strip()]
+                combos = []
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        # Try to extract card from each line (supports various formats)
+                        card = self.extract_card_from_text(line)
+                        if card:
+                            combos.append(card)
+                        else:
+                            # If line already in correct format, use it
+                            if len(line.split("|")) >= 4:
+                                combos.append(line)
+                
+                if not combos:
+                    await update.message.reply_text("❌ No valid cards found in file!")
+                    return
+                
                 self.user_stats[user_id]['total'] = len(combos)
                 self.user_stats[user_id]['approved_ccs'] = []
                 
-                tasks = [self.process_line(user_id, combo, self.global_semaphore, update, is_single_check=False) for combo in combos]
+                # Process combos with user-specific semaphore
+                tasks = [self.process_line(user_id, combo, user_semaphore, update, is_single_check=False) for combo in combos]
                 
                 for future in asyncio.as_completed(tasks):
                     result, status, error_message = await future
@@ -407,10 +585,15 @@ class AdvancedCardChecker:
             logger.error(f"Processing error: {str(e)}")
             await self.send_message(update, f"❌ Processing failed: {str(e)}")
         finally:
+            # Clean up files
             if os.path.exists(filename):
                 os.remove(filename)
+            if user_id in self.user_files:
+                del self.user_files[user_id]
             if user_id in self.active_tasks:
                 del self.active_tasks[user_id]
+            # Clean up user semaphore when done
+            self.cleanup_user_semaphore(user_id)
 
     def generate_random_account(self):
         """Generate random account like in test-subject.py"""
@@ -525,7 +708,7 @@ class AdvancedCardChecker:
         
         async with semaphore:
             try:
-                if len(combo.split("|")) != 4:
+                if len(combo.split("|")) < 4:
                     return False, status, "Invalid card format"
 
                 proxy = random.choice(self.proxy_pool) if self.proxy_pool else None
@@ -846,7 +1029,8 @@ class AdvancedCardChecker:
             logger.error(f"Failed to send hits file: {str(e)}")
         
         await self.send_message(update, report)
-        del self.user_stats[user_id]
+        if user_id in self.user_stats:
+            del self.user_stats[user_id]
 
     async def show_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -879,6 +1063,8 @@ class AdvancedCardChecker:
             await self.send_message(update, "⏹️ Process cancelled")
             if user_id in self.user_stats:
                 del self.user_stats[user_id]
+            # Clean up user semaphore
+            self.cleanup_user_semaphore(user_id)
         else:
             await self.send_message(update, "⚠️ No active process")
 
@@ -908,6 +1094,7 @@ def main():
         CommandHandler('stats', checker.show_stats),
         CommandHandler('help', checker.show_help),
         CommandHandler('chk', checker.chk_command),
+        CommandHandler('fchk', checker.fchk_command),
         CommandHandler('broadcast', checker.broadcast_command),
         CommandHandler('genkey', checker.genkey_command),
         CommandHandler('redeem', checker.redeem_command),
@@ -924,4 +1111,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
