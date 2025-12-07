@@ -53,7 +53,7 @@ class AdvancedCardChecker:
         self.user_files = {}
         self.rate_limits = {}
         self.rate_limit_window = 60
-        self.rate_limit_max_cards = 500
+        self.rate_limit_max_cards = 1500
         
         self.stripe_auth = StripeAuthGate()
         self.stripe_charge = StripeChargeGate()
