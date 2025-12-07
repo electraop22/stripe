@@ -958,7 +958,7 @@ System Ready
         await update.message.reply_text(info_text, parse_mode='HTML')
 
     def run(self):
-        token = os.environ.get('BOT_TOKEN', '7849294057:AAFZD_5x6mH5p5m-qV5Yy3vYC_-VCpqPblc')
+        token = os.environ.get('BOT_TOKEN', '8122009466:AAEx1Ct6OC4QkFxX4ea9MXNZzc0U6gxhZ2w')
         
         self.application = Application.builder().token(token).post_init(self.post_init).build()
         
