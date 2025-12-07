@@ -46,7 +46,6 @@ class AdvancedCardChecker:
         self.active_tasks = {}
         self.user_stats = {}
         self.proxy_pool = []
-        self.load_proxies()
         self.request_timeout = aiohttp.ClientTimeout(total=70)
         self.user_semaphores = {}
         self.max_concurrent_per_user = 20
@@ -58,6 +57,7 @@ class AdvancedCardChecker:
         
         self.stripe_auth = StripeAuthGate()
         self.stripe_charge = StripeChargeGate()
+        self.load_proxies()
 
     def create_banner(self):
         return f"""
