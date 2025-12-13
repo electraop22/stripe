@@ -1,9 +1,0 @@
-python-telegram-bot
-colorama
-aiohttp
-pymongo
-python-dateutil
-flask
-fake_useragent
-telebot
-requests
